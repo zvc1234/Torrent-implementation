@@ -1,0 +1,244 @@
+syntax = "proto3";
+package torrent;
+
+// Common
+message NodeId {
+  string host = 1; // String containing either domain name  or IP (most likely)
+  int32  port = 2;
+  string owner = 3; // Short alias or acronym of the owner of the node
+  int32 index = 4; // Node index within the owner's nodes. Must be 1, 2, or 3
+}
+
+enum Status {
+  SUCCESS = 0;
+  UNABLE_TO_COMPLETE = 1; // there are no errors, but the requested operation cannot be completed
+  MESSAGE_ERROR = 2; // the incoming request or response is invalid in some way
+  NETWORK_ERROR = 3; // any network communication problem
+  PROCESSING_ERROR = 4; // any other error
+}
+
+message ChunkInfo {
+  uint32 index = 1; // Chunk order number starting from 0
+  uint32 size = 2; // The standard chunk size is 1024. Last chunks will be smaller.
+  bytes hash = 3; // MD5 of the chunk content (1024 bytes or less)
+}
+
+message FileInfo {
+  bytes hash = 1; // MD5 of the file content
+  uint32 size = 2;
+  string filename = 3;
+  repeated ChunkInfo chunks = 4;
+}
+
+message NodeReplicationStatus {
+  NodeId node = 1;
+  uint32 chunkIndex = 2;
+  Status status = 3;
+  string errorMessage = 4;
+}
+
+message NodeSearchResult {
+  NodeId node = 1;
+  Status status = 2;
+  string errorMessage = 3;
+  repeated FileInfo files = 4;
+}
+
+// Parties:
+//    Node -> Hub
+// Description:
+//   Register node presence in the system, by sending the IP, port, your name or an alias, and the order number
+//   (index) of your node. The index must be 1, 2, or 3.
+// Response status:
+//   - SUCCESS if all went well, even if there are no results
+//   - MESSAGE_ERROR if the node index is not 1, 2, or 3, or the owner is empty
+//   - PROCESSING_ERROR in all other cases
+message RegistrationRequest {
+  string owner = 1; // Short alias or acronym of the owner of the node
+  int32 index = 2; // Node index within the owner's nodes. Must be 1, 2, or 3
+  int32 port = 3; // The port on which the node is listening for connections
+}
+message RegistrationResponse {
+  Status status = 1;
+  string errorMessage = 2;
+}
+
+// Parties:
+//    Node -> Hub
+//    Get the list of nodes corresponding to the given subnet ID. Each search and replicate requests will carry this ID
+//    with it, identifying the nodes involved in its processing.
+// Response status:
+//   - SUCCESS if all went well, even if there are no results
+//   - UNABLE_TO_COMPLETE if the hash cannot be found (this means the node list is cancelled and all messages
+//                        referencing it should be ignored)
+//   - PROCESSING_ERROR in all other cases
+message SubnetRequest {
+  int32 subnetId = 1;
+}
+message SubnetResponse {
+  Status status = 1;
+  string errorMessage = 2;
+  repeated NodeId nodes = 3;
+}
+
+// Parties:
+//   Hub  -> Node
+//   Node -> Node
+// Description:
+//   Search locally for filenames matching the regex
+// Response status:
+//   - SUCCESS if all went well, even if there are no results
+//   - MESSAGE_ERROR if the request regexp is invalid
+//   - PROCESSING_ERROR in all other cases
+message LocalSearchRequest {
+  string regex = 1;
+}
+message LocalSearchResponse {
+  Status status = 1;
+  string errorMessage = 2;
+  repeated FileInfo fileInfo = 3;
+}
+
+// Parties:
+//   Hub -> Node
+// Description:
+//   Search all nodes (using LocalSearchRequest) for filenames matching the regex and aggregated the results
+//   If no nodes reply, just return what you have locally, and declare success.
+// Response status:
+//   - SUCCESS if all went well, even if there are no results, and/or no other nodes replied
+//   - MESSAGE_ERROR if the request regexp is invalid
+//   - PROCESSING_ERROR in all other cases
+// NodeSearchResult status:
+//   - NETWORK_ERROR if you cannot connect to the node
+//   - MESSAGE_ERROR if the response is not parsable or has the wrong type
+//   - Otherwise, use LocalSearchResponse.status
+message SearchRequest {
+  string regex = 1;
+  int32 subnetId = 2;
+}
+message SearchResponse {
+  Status status = 1;
+  string errorMessage = 2;
+  repeated NodeSearchResult results = 3;
+}
+
+// Parties:
+//   Hub -> Node
+// Description:
+//   Store locally the given file. Return the details about the file.
+// Response status:
+//   - SUCCESS if all went well, even if you have the file already
+//   - MESSAGE_ERROR if the filename is empty (it is OK for the data to be empty)
+//   - PROCESSING_ERROR in all other cases
+message UploadRequest {
+  string filename = 1;
+  bytes  data = 2;
+}
+message UploadResponse {
+  Status status = 1;
+  string errorMessage = 2;
+  FileInfo fileInfo = 3; // The FileInfo you stored or had already
+}
+
+// Parties:
+//   Client -> Node
+// Description:
+//   Replicate this file locally, if not present already. Ask for chunks from the other nodes using ChunkRequest.
+//   If a ChunkRequest fails, send it to another node until you tried al nodes. If none of the nodes gives you that
+//   chunk's data,
+// Response status:
+//   - SUCCESS if all went well, even if you have the file already
+//   - MESSAGE_ERROR if the filename in the FileInfo is empty
+//   - UNABLE_TO_COMPLETE if you cannot receive all the chunks from the other nodes
+//   - PROCESSING_ERROR in all other cases
+// NodeReplication status:
+//   - NETWORK_ERROR if you cannot connect to the node
+//   - MESSAGE_ERROR if the response is not parsable or has the wrong type
+//   - Otherwise, use ChunkResponse.status
+message ReplicateRequest {
+  FileInfo fileInfo = 1;
+  int32 subnetId = 2;
+}
+message ReplicateResponse {
+  Status status = 1;
+  string errorMessage = 2;
+  repeated NodeReplicationStatus nodeStatusList = 3; // The status of all the requests to other nodes
+}
+
+// Parties:
+//   Node -> Node
+// Description:
+//   Download the specified chunk.
+// Response status:
+//   - SUCCESS if you have the chunk
+//   - MESSAGE_ERROR if the filehash is not 16 bytes long or the index is less than zero
+//   - UNABLE_TO_COMPLETE if you do not have the chunk
+//   - PROCESSING_ERROR in all other cases
+message ChunkRequest {
+  bytes fileHash = 1; // MD5 of the file content
+  uint32 chunkIndex = 2;
+}
+message ChunkResponse {
+  Status status = 1;
+  string errorMessage = 2;
+  bytes data = 3; // Chunk content (1024 bytes or less)
+}
+
+// Parties:
+//   Client -> Node
+// Description:
+//   Download a file from the local node based on its hash
+// Response status:
+//   - SUCCESS if you have the file
+//   - MESSAGE_ERROR if the filehash is not 16 bytes long
+//   - UNABLE_TO_COMPLETE if you do not have the file
+//   - PROCESSING_ERROR in all other cases
+message DownloadRequest {
+  bytes fileHash = 1; // MD5 of the file content
+}
+message DownloadResponse {
+  Status status = 1;
+  string errorMessage = 2;
+  bytes data = 3; // File content
+}
+
+// Wrapper message
+message Message {
+  enum Type {
+    LOCAL_SEARCH_REQUEST = 0; // TODO Start from one to avoid problems with languages where 0 is equivalent tu NULL
+    LOCAL_SEARCH_RESPONSE = 1;
+    SEARCH_REQUEST = 2;
+    SEARCH_RESPONSE = 3;
+    UPLOAD_REQUEST = 4;
+    UPLOAD_RESPONSE = 5;
+    REPLICATE_REQUEST = 6;
+    REPLICATE_RESPONSE = 7;
+    CHUNK_REQUEST = 8;
+    CHUNK_RESPONSE = 9;
+    DOWNLOAD_REQUEST = 10;
+    DOWNLOAD_RESPONSE = 11;
+    REGISTRATION_REQUEST = 12;
+    REGISTRATION_RESPONSE = 13;
+    SUBNET_REQUEST = 14;
+    SUBNET_RESPONSE = 15;
+  }
+
+  Type type = 1;
+
+  LocalSearchRequest localSearchRequest = 2;
+  LocalSearchResponse localSearchResponse = 3;
+  SearchRequest searchRequest = 4;
+  SearchResponse searchResponse = 5;
+  UploadRequest uploadRequest = 6;
+  UploadResponse uploadResponse = 7;
+  ReplicateRequest replicateRequest = 8;
+  ReplicateResponse replicateResponse = 9;
+  ChunkRequest chunkRequest = 10;
+  ChunkResponse chunkResponse = 11;
+  DownloadRequest downloadRequest = 12;
+  DownloadResponse downloadResponse = 13;
+  RegistrationRequest registrationRequest = 14;
+  RegistrationResponse registrationResponse = 15;
+  SubnetRequest subnetRequest = 16;
+  SubnetResponse subnetResponse = 17;
+}
